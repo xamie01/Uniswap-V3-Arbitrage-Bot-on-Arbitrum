@@ -4,25 +4,26 @@
 // You can also run a script with `npx hardhat run <script>`. If you do that, Hardhat
 // will compile your contracts, add the Hardhat Runtime Environment's members to the
 // global scope, and execute the script.
-const hre = require("hardhat")
+const hre = require("hardhat");
 
-const config = require("../config.json")
+const config = require("../config.json");
 
 async function main() {
   const arbitrage = await hre.ethers.deployContract(
     "ArbitrageV3",
     [
-      config.SUSHISWAPV3.V3_ROUTER_02_ADDRESS,
-      config.UNISWAPV3.V3_ROUTER_02_ADDRESS
+      config.BALANCERV3.VAULT_ADDRESS, // Balancer V3 Vault address
+      config.UNISWAPV3.V3_ROUTER_02_ADDRESS, // Uniswap V3 router
+      config.SUSHISWAPV3.V3_ROUTER_02_ADDRESS // Sushiswap V3 router
     ]
-  )
+  );
 
-  const tx = await arbitrage.waitForDeployment()
+  await arbitrage.waitForDeployment();
 
-  console.log(`Arbitrage V3 contract deployed to ${await arbitrage.getAddress()} on ${hre.network.name}`)
+  console.log(`Arbitrage V3 contract deployed to ${await arbitrage.getAddress()} on ${hre.network.name}`);
 
-  console.log(`\nTransaction Receipt:`)
-  console.log(tx)
+  console.log(`\nTransaction Receipt:`);
+  console.log(await arbitrage.deploymentTransaction());
 }
 
 // We recommend this pattern to be able to use async/await everywhere
