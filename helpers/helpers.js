@@ -1,140 +1,120 @@
-const ethers = require("ethers")
-const Big = require('big.js')
+const ethers = require("ethers");
+const Big = require('big.js');
 
-const IUniswapV2Pair = require("@uniswap/v3-core/artifacts/contracts/UniswapV3Pool.sol/UniswapV3Pool.json")
-const IERC20 = require('@openzeppelin/contracts/build/contracts/ERC20.json')
+const IUniswapV3Pool = require("@uniswap/v3-core/artifacts/contracts/UniswapV3Pool.sol/UniswapV3Pool.json");
+const IERC20 = require('@openzeppelin/contracts/build/contracts/ERC20.json');
 
+// All common Uniswap V3 fee tiers
+const FEE_TIERS = [500, 3000, 10000];
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+/**
+ * Gets the metadata for two tokens.
+ */
 async function getTokenAndContract(_token0Address, _token1Address, _provider) {
-    const token0Contract = new ethers.Contract(_token0Address, IERC20.abi, _provider)
-    const token1Contract = new ethers.Contract(_token1Address, IERC20.abi, _provider)
+    const token0Contract = new ethers.Contract(_token0Address, IERC20.abi, _provider);
+    const token1Contract = new ethers.Contract(_token1Address, IERC20.abi, _provider);
 
-    const token0 = {
-        address: _token0Address,
-        decimals: 18,
-        symbol: await token0Contract.symbol(),
-        name: await token0Contract.name()
+    // Use Promise.all for faster metadata fetching
+    const [symbol0, name0, decimals0, symbol1, name1, decimals1] = await Promise.all([
+        token0Contract.symbol(),
+        token0Contract.name(),
+        token0Contract.decimals(),
+        token1Contract.symbol(),
+        token1Contract.name(),
+        token1Contract.decimals()
+    ]);
+
+    const token0 = { address: _token0Address, decimals: Number(decimals0), symbol: symbol0, name: name0 };
+    const token1 = { address: _token1Address, decimals: Number(decimals1), symbol: symbol1, name: name1 };
+
+    return { token0Contract, token1Contract, token0, token1 };
+}
+
+/**
+ * NEW FUNCTION: Iterates through all fee tiers to find the first valid pool.
+ * A more advanced version could check for the pool with the most liquidity.
+ * @returns {object} An object containing the pool address and its fee tier, or null if no valid pool is found.
+ */
+async function findValidPool(_V3Factory, _token0, _token1) {
+    for (const fee of FEE_TIERS) {
+        const poolAddress = await _V3Factory.getPool(_token0, _token1, fee);
+        if (poolAddress !== ZERO_ADDRESS) {
+            // Found a valid pool
+            return { poolAddress, fee };
+        }
+    }
+    // No valid pool found for any fee tier
+    return null;
+}
+
+/**
+ * MODIFIED: This function is now more robust and fee-aware.
+ * It finds the first available pool for a pair and returns its price.
+ */
+async function getV3Price(_V3Factory, _token0Address, _token1Address, _provider) {
+    for (const fee of FEE_TIERS) {
+        const poolAddress = await _V3Factory.getPool(_token0Address, _token1Address, fee);
+        
+        if (poolAddress !== ZERO_ADDRESS) {
+            // Found a pool, now check if it has liquidity
+            const poolContract = new ethers.Contract(poolAddress, IUniswapV3Pool.abi, _provider);
+            const poolLiquidity = await poolContract.liquidity();
+
+            if (poolLiquidity > 0) {
+                // This is a valid, liquid pool. Get its price.
+                const slot0 = await poolContract.slot0();
+                const sqrtPriceX96 = slot0.sqrtPriceX96;
+                const price = new Big(sqrtPriceX96.toString()).pow(2).div(new Big(2).pow(192));
+                
+                // Return the price and the fee of the first liquid pool we find
+                return { price, fee };
+            }
+        }
     }
 
-    const token1 = {
-        address: _token1Address,
-        decimals: 18,
-        symbol: await token1Contract.symbol(),
-        name: await token1Contract.name()
-    }
-
-    return { token0Contract, token1Contract, token0, token1 }
+    // After checking all fee tiers, no liquid pool was found.
+    return null;
 }
-
-// v2 getPair >>> v3 getPool adding fee
-async function getPairAddress(_V2Factory, _token0, _token1) {
-    const pairAddress = await _V2Factory.getPool(_token0, _token1, 3000)
-    return pairAddress
-}
-
-async function getPairContract(_V2Factory, _token0, _token1, _provider) {
-    const pairAddress = await getPairAddress(_V2Factory, _token0, _token1)
-    const pairContract = new ethers.Contract(pairAddress, IUniswapV2Pair.abi, _provider)
-    return pairContract
-}
-
-// New for V3
-async function getV3Price(_V2Factory, _token0, _token1, _provider) {
-    const poolContract = await getPairContract(_V2Factory, _token0, _token1, _provider)
-    const slot0 = await poolContract.slot0()
-    const sqrtPriceX96= slot0.sqrtPriceX96
-    const price = new Big(sqrtPriceX96.toString()).pow(2).div(new Big(2).pow(192));
-    return price
-}
-
-// Commented out for V3
-// async function calculatePrice(_pairContract) {
-//     const [x, y] = await getReserves(_pairContract)
-//     return Big(x).div(Big(y))
-// }
-
-// async function calculatePriceInv(_pairContract) {
-//     const [x, y] = await getReserves(_pairContract)
-//     return Big(y).div(Big(x)) // FOR WBTC * 10000000000n conversion i.e. +10 decimals
-// }
-
-async function entropy(_reserveIn, _rate, _token0In) {
-    const result = new Big(_reserveIn).times(_rate)
-    const losses = ethers.formatUnits(result.minus(_token0In).toFixed(0), 'ether')
-    return losses
-}
-
-async function calculateDifference(_uPrice, _sPrice) {
-    return (((_uPrice - _sPrice) / _sPrice) * 100).toFixed(2)
-}
-
-// Commented out for V3
-// async function simulate(amount, _routerPath, _token0, _token1) {
-//     const trade1 = await _routerPath[0].getAmountsOut(amount, [_token0.address, _token1.address])
-//     console.log(`simulate trade 1: ${trade1}`)
-//     const trade2 = await _routerPath[1].getAmountsOut(trade1[1], [_token1.address, _token0.address])
-//     console.log(`simulate trade 2: ${trade2}`)
-
-//     const amountIn = Number(ethers.formatUnits(trade1[0], 'ether'))
-//     const amountOut = Number(ethers.formatUnits(trade2[1], 'ether'))
-
-//     return { amountIn, amountOut }
-// }
-
-// Commented out for V3
-// async function simulate2(input, _pairContractA, _pairContractB, percentDiff) {
-//     const reservesA = await getReserves(_pairContractA)
-//     const reservesB = await getReserves(_pairContractB)
-//     console.log(reservesA)
-//     console.log(reservesB)
-//     reservesA[1] = reservesA[1] * (100n - percentDiff) / 100n
-//     console.log(reservesA)
-//     console.log(reservesB)
-
-//     const trade1 = ((BigInt(input) * 997n) * reservesA[0]) / (reservesA[1] * 1000n + (BigInt(input) * 997n))
-//     const trade2 = ((trade1 * 997n) * reservesB[1]) / (reservesB[0] * 1000n + (trade1 * 997n))    
-//     console.log(trade1)
-//     console.log(trade2)
-
-//     return trade2
-
-// }
-
+/**
+ * Gets a trade quote from a Uniswap V3 Quoter contract.
+ */
 async function getQuote(_quoterContract, _tokenIn, _tokenOut, _amountIn, _fee) {
+    if (!_amountIn || BigInt(_amountIn) <= 0) {
+        // Return zero values if amountIn is invalid to prevent contract call errors
+        return { amountOut: 0n, sqrtPriceX96After: 0n, tickAfter: 0, gasEstimate: 0n };
+    }
+    
     const params = {
         tokenIn: _tokenIn,
         tokenOut: _tokenOut,
         fee: _fee,
         amountIn: _amountIn,
         sqrtPriceLimitX96: 0
-    }
+    };
 
     try {
         const result = await _quoterContract.quoteExactInputSingle.staticCall(params);
-        // console.log(result)
-        // console.log(`Amount Out: \t${ethers.formatEther(result.amountOut)}`)
-        // console.log(`Price After: \t${result.sqrtPriceX96After}`)
-        // console.log(`Tick After: \t${result.tickAfter}`)
-        // console.log(`Gas Estimate: \t${result.gasEstimate}`)
-        
-        // Destructure the returned values
-        const [amountOut, sqrtPriceX96After, tickAfter, gasEstimate] = result;
-        return {amountOut, sqrtPriceX96After, tickAfter, gasEstimate}
+        return {
+            amountOut: result.amountOut,
+            sqrtPriceX96After: result.sqrtPriceX96After,
+            tickAfter: result.tickAfter,
+            gasEstimate: result.gasEstimate
+        };
     } catch (error) {
-        console.error('Error getting quote:', error);
-        throw error
+        // This can happen if there's no liquidity for the trade. Return zero values.
+        console.error(`Error getting quote for amount ${ethers.formatEther(_amountIn)}: No liquidity or other issue.`);
+        return { amountOut: 0n, sqrtPriceX96After: 0n, tickAfter: 0, gasEstimate: 0n };
     }
 }
 
+// These functions are now deprecated or unused by the new logic.
+// getPairAddress is replaced by findValidPool
+// getPairContract is no longer needed externally
+// entropy and calculateDifference are not used in the main bot.
 module.exports = {
     getTokenAndContract,
-    getPairAddress,
-    getPairContract,
-    // calculatePrice,
-    // calculatePriceInv,
-    entropy,
-    calculateDifference,
-    // simulate,
-    // simulate2,
     getV3Price,
-    getQuote
-}
+    getQuote,
+    findValidPool // Exporting this in case the main bot needs it directly
+};

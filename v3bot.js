@@ -1,175 +1,141 @@
-// -- HANDLE INITIAL SETUP -- //
+// bot.js
 require('./helpers/serverbot.js');
 require("dotenv").config();
-
 const ethers = require("ethers");
 const config = require('./config.json');
-const QuoterV2 = require("@uniswap/v3-periphery/artifacts/contracts/lens/QuoterV2.sol/QuoterV2.json");
-const { getTokenAndContract, getPairContract, getV3Price, getQuote } = require('./helpers/helpers');
-const { provider, uFactory, sFactory, arbitrageV3 } = require('./helpers/initialization');
+const TelegramBot = require('node-telegram-bot-api');
+const { getTokenAndContract, getV3Price, getQuote, findValidPool } = require('./helpers/helpers');
 
-// -- CONFIG & STATE VARIABLES -- //
-const uQuoteAddress = '0x61fFE014bA17989E743c5F6cB21bF9697530B21e';
-const sQuoteAddress = '0x0524E833cCD057e4d7A296e3aaAb9f7675964Ce1';
+// --- Provider Setup for ARBITRUM SEPOLIA ---
+const provider = new ethers.JsonRpcProvider(process.env.ETH_SEPOLIA_RPC_URL);
 
-// .ENV VALUES
-const arbForAddress = process.env.ARB_FOR;      // Address of token we are arbitraging (e.g., WETH)
-const arbAgainstAddress = process.env.ARB_AGAINST; // Address of token we are trading against (e.g., USDC)
-const gasLimit = process.env.GAS_LIMIT || 1600000;
-const PROFIT_THRESHOLD = parseFloat(process.env.PROFIT_THRESHOLD) || 0.5; // Minimum profit % to execute
+// --- Contract Instances (ensure config.json is updated) ---
+const uFactory = new ethers.Contract(config.UNISWAPV3.V3_FACTORY_ADDRESS, require("@uniswap/v3-core/artifacts/contracts/UniswapV3Factory.sol/UniswapV3Factory.json").abi, provider);
+const sFactory = new ethers.Contract(config.SUSHISWAPV3.V3_FACTORY_ADDRESS, require("@uniswap/v3-core/artifacts/contracts/UniswapV3Factory.sol/UniswapV3Factory.json").abi, provider);
+const uQuoter = new ethers.Contract(config.UNISWAPV3.QUOTER_V2_ADDRESS, require("@uniswap/v3-periphery/artifacts/contracts/lens/QuoterV2.sol/QuoterV2.json").abi, provider);
+const sQuoter = new ethers.Contract(config.SUSHISWAPV3.QUOTER_V2_ADDRESS, require("@uniswap/v3-periphery/artifacts/contracts/lens/QuoterV2.sol/QuoterV2.json").abi, provider);
+const arbitrageV3 = new ethers.Contract(config.ARBITRAGE_V3_ADDRESS, require("./artifacts/contracts/ArbitrageV3.sol/ArbitrageV3.json").abi, provider);
 
-// State trackers
-let isExecuting = false;
-let attempts = 0;
-let success = 0;
 
-/**
- * Calculates the optimal arbitrage trade and returns the details.
- * @param {object} token0 - The primary token object (e.g., WETH).
- * @param {object} token1 - The secondary token object (e.g., USDC).
- * @param {ethers.Contract} uQuoter - The Uniswap V3 Quoter contract instance.
- * @param {ethers.Contract} sQuoter - The Sushiswap V3 Quoter contract instance.
- * @returns {object} An object containing trade details if profitable.
- */
-const quoteSwap = async (token0, token1, uQuoter, sQuoter) => {
-    let profit, profitable, best = 0, bestAmount = 0, startOnUni;
+// --- CONFIG & STATE VARIABLES ---
+const arbForAddress = process.env.ARB_FOR; 
+const tokensAgainst = process.env.ARB_AGAINST_TOKENS.split(',');
+const PROFIT_THRESHOLD = parseFloat(process.env.PROFIT_THRESHOLD) || 0.1;
+const FLASH_LOAN_FEE = parseFloat(process.env.FLASH_LOAN_FEE) || 0.0009;
+const SLIPPAGE_TOLERANCE = 50n; // 0.5%
 
-    // 1. Get fresh prices for the decision
-    const uPrice = await getV3Price(uFactory, arbForAddress, arbAgainstAddress, provider);
-    const sPrice = await getV3Price(sFactory, arbForAddress, arbAgainstAddress, provider);
+// --- TELEGRAM BOT SETUP ---
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+let isRunning = true; let isExecuting = false; let successCount = 0;
+let tradeHistory = []; let logHistory = [];
 
-    console.log(`Uniswap Price:    ${uPrice} ${token1.symbol}/${token0.symbol}`);
-    console.log(`Sushiswap Price:  ${sPrice} ${token1.symbol}/${token0.symbol}`);
-    const priceDifference = (sPrice / uPrice * 100) - 100;
-    console.log(`Price Difference: ${priceDifference.toFixed(4)}%\n`);
-
-    let buyExchange, sellExchange;
-
-    // 2. CORRECTED LOGIC: Determine the correct trading route by finding the lower price
-    if (uPrice < sPrice) {
-        // Price is LOWER on Uniswap, so we BUY there and SELL on Sushiswap
-        console.log('Strategy: Buy on Uniswap, Sell on Sushiswap');
-        buyExchange = uQuoter;
-        sellExchange = sQuoter;
-        startOnUni = true;
-    } else {
-        // Price is LOWER on Sushiswap, so we BUY there and SELL on Uniswap
-        console.log('Strategy: Buy on Sushiswap, Sell on Uniswap');
-        buyExchange = sQuoter;
-        sellExchange = uQuoter;
-        startOnUni = false;
-    }
-
-    // 3. Loop to find the most profitable trade amount
-    if (Math.abs(priceDifference) > PROFIT_THRESHOLD) {
-        console.log("--- Finding Optimal Trade Amount ---");
-        const fee = 3000;
-        let amountIn = 100000000000000000n; // Start at 0.1 WETH
-
-        for (let i = 0; i < 20; i++) {
-            const quote1 = await getQuote(buyExchange, arbForAddress, arbAgainstAddress, amountIn, fee);
-            const quote2 = await getQuote(sellExchange, arbAgainstAddress, arbForAddress, quote1.amountOut, fee);
-            profit = quote2.amountOut - amountIn;
-
-            if (profit > best) {
-                best = profit;
-                bestAmount = amountIn;
-                console.log(`New best profit: ${ethers.formatEther(best)} ${token0.symbol} with input: ${ethers.formatEther(bestAmount)} ${token0.symbol}`);
-            }
-            amountIn += 100000000000000000n; // Increment by 0.1 WETH
-        }
-        console.log("------------------------------------");
-    }
-
-    // 4. Return the result
-    if (best > 0) {
-        console.log(`\nOptimal arbitrage found! Profit: ${ethers.formatEther(best)} ${token0.symbol} by swapping ${ethers.formatEther(bestAmount)} ${token0.symbol}.`);
-        profitable = true;
-        return { profitable, bestAmount, startOnUni };
-    } else {
-        console.log(`\nNo profitable arbitrage opportunity found. Cancelling attempt.`);
-        profitable = false;
-        return { profitable: false, bestAmount: 0, startOnUni: null };
-    }
-}
-
-/**
- * Main execution function.
- */
-const main = async () => {
-    console.log("Arbitrage Bot Starting...");
-    console.log(`Monitoring for opportunities between ${arbForAddress} and ${arbAgainstAddress}`);
-    console.log(`Profit Threshold set to: ${PROFIT_THRESHOLD}%\n`);
-
-    // -- ONE-TIME SETUP -- //
-    const { token0Contract, token1Contract, token0, token1 } = await getTokenAndContract(arbForAddress, arbAgainstAddress, provider);
-    const uPair = await getPairContract(uFactory, token0.address, token1.address, provider);
-    const sPair = await getPairContract(sFactory, token0.address, token1.address, provider);
-    const uQuoter = new ethers.Contract(uQuoteAddress, QuoterV2.abi, provider);
-    const sQuoter = new ethers.Contract(sQuoteAddress, QuoterV2.abi, provider);
+// --- LOGGING & TELEGRAM ---
+const originalLog = console.log; const originalError = console.error;
+const MAX_LOG_HISTORY = 50;
+const sendMessage = (text) => { bot.sendMessage(process.env.TELEGRAM_CHAT_ID, text, { parse_mode: 'Markdown' }); };
+console.log = function(...args) {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    logHistory.push(`[LOG] ${new Date().toISOString()}: ${message}`);
+    if (logHistory.length > MAX_LOG_HISTORY) logHistory.shift();
+    originalLog.apply(console, args);
+};
+console.error = function(...args) {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    logHistory.push(`[ERROR] ${new Date().toISOString()}: ${message}`);
+    if (logHistory.length > MAX_LOG_HISTORY) logHistory.shift();
+    sendMessage(`🚨 **CRITICAL ERROR** 🚨\n\n${message}`);
+    originalError.apply(console, args);
+};
+bot.onText(/\/start/, (msg) => { isRunning = true; sendMessage("✅ Bot **STARTED**."); });
+bot.onText(/\/stop/, (msg) => { isRunning = false; sendMessage("❌ Bot **STOPPED**."); });
+bot.onText(/\/status/, async (msg) => {
     const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    const balance = await provider.getBalance(signer.address);
+    sendMessage(`**Status Report**\n*State:* ${isRunning ? '✅ Running' : '❌ Stopped'}\n*Trades:* ${successCount}\n*Balance:* ${ethers.formatEther(balance)} ETH`);
+});
+bot.onText(/\/history/, (msg) => {
+    if (tradeHistory.length === 0) { sendMessage("No successful trades recorded."); return; }
+    let message = "**Recent Trade History (Last 5)**\n\n";
+    tradeHistory.slice(-5).reverse().forEach(t => { message += `*#${t.id}:* ${t.pair} -> ${t.profit}\n[View Tx](https://sepolia.arbiscan.io/tx/${t.txHash})\n\n`; });
+    sendMessage(message);
+});
+bot.onText(/\/logs/, (msg) => {
+    if (logHistory.length === 0) { sendMessage("No logs recorded."); return; }
+    sendMessage("```\n--- Recent Logs ---\n" + logHistory.slice(-15).join('\n') + "\n```");
+});
 
-    console.log(`Bot Wallet Address: ${signer.address}`);
-    console.log(`Uniswap Pair: \t${await uPair.getAddress()}`);
-    console.log(`Sushiswap Pair: \t${await sPair.getAddress()}\n`);
+// --- CORE LOGIC ---
+const checkPair = async (token0Address, token1Address, signer) => {
+    const { token0, token1 } = await getTokenAndContract(token0Address, token1Address, provider);
+    const uResult = await getV3Price(uFactory, token0.address, token1.address, provider);
+    const sResult = await getV3Price(sFactory, token0.address, token1.address, provider);
+    if (!uResult || !sResult || uResult.price.eq(0) || sResult.price.eq(0)) return;
+    const priceDifference = Math.abs((sResult.price.div(uResult.price).toNumber() * 100) - 100);
+    if (priceDifference < PROFIT_THRESHOLD) return;
 
-    // REFACTORED: Single handler for both Uniswap and Sushiswap swap events
-    const handleSwapEvent = async (log) => {
-        if (isExecuting) return;
+    console.log(`Price Difference Found! ${token0.symbol}/${token1.symbol} -> ${priceDifference.toFixed(4)}%`);
+    const [buyQuoter, sellQuoter, startOnUni] = uResult.price.lt(sResult.price) ? [uQuoter, sQuoter, true] : [sQuoter, uQuoter, false];
+    const feeTier = startOnUni ? uResult.fee : sResult.fee;
+    
+    let bestNetProfit = -Infinity; let bestAmount = 0n; let bestAmountOutFromFirstSwap = 0n;
+    let amountIn = ethers.parseEther("0.1"); // Start with a smaller amount for testnet
+    const gasPrice = (await provider.getFeeData()).gasPrice;
 
-        isExecuting = true;
-        attempts += 1;
-        console.log(`\n-- Swap Detected! [Attempt #${attempts}] --`);
-
-        const result = await quoteSwap(token0, token1, uQuoter, sQuoter);
-
-        if (result.profitable) {
-            console.log("Proceeding with trade execution...");
-
-            const ethBalanceBefore = await provider.getBalance(signer.address);
-            const tokenBalanceBefore = await token0Contract.balanceOf(signer.address);
-
+    for (let i = 0; i < 10; i++) { // Check up to 1 ETH
+        const quote1 = await getQuote(buyQuoter, token0.address, token1.address, amountIn, feeTier);
+        if (quote1.amountOut === 0n) continue;
+        const quote2 = await getQuote(sellQuoter, token1.address, token0.address, quote1.amountOut, feeTier);
+        const grossProfit = quote2.amountOut - amountIn;
+        if (grossProfit > 0) {
             try {
-                const tx = await arbitrageV3.connect(signer).executeTrade(
-                    result.startOnUni,
-                    token0.address,
-                    token1.address,
-                    result.bestAmount,
-                    { gasLimit: gasLimit }
-                );
-
-                const receipt = await tx.wait();
-                success += 1;
-                console.log("✅ Arbitrage transaction successful! TX Hash:", receipt.hash);
-
-            } catch (error) {
-                console.error("❌ Arbitrage transaction failed:", error.reason || error.message);
-            }
-
-            const ethBalanceAfter = await provider.getBalance(signer.address);
-            const tokenBalanceAfter = await token0Contract.balanceOf(signer.address);
-            const ethSpent = ethBalanceBefore - ethBalanceAfter;
-            const tokenGained = tokenBalanceAfter - tokenBalanceBefore;
-
-            console.table({
-                'ETH Spent (Gas)': ethers.formatEther(ethSpent),
-                'WETH Profit': ethers.formatEther(tokenGained)
-            });
-
+                const estimatedGas = await arbitrageV3.connect(signer).executeTrade.estimateGas(startOnUni, token0.address, token1.address, feeTier, amountIn, 0);
+                const gasCost = estimatedGas * gasPrice;
+                const flashLoanFee = (amountIn * BigInt(Math.floor(FLASH_LOAN_FEE * 10000))) / 10000n;
+                const netProfit = grossProfit - gasCost - flashLoanFee;
+                if (netProfit > bestNetProfit) {
+                    bestNetProfit = netProfit; bestAmount = amountIn; bestAmountOutFromFirstSwap = quote1.amountOut;
+                }
+            } catch (e) {}
         }
+        amountIn += ethers.parseEther("0.1");
+    }
 
-        isExecuting = false;
-        console.log(`-- End of Attempt #${attempts} | Success Rate: ${success}/${attempts} | Waiting for next event... --\n`);
-    };
-
-    // Attach the single handler to both listeners
-    uPair.on('Swap', handleSwapEvent);
-    sPair.on('Swap', handleSwapEvent);
-
-    console.log("Listening for Swap events...");
+    if (bestNetProfit > 0) {
+        isExecuting = true;
+        console.log(`🔥🔥🔥 Arbitrage Opportunity Found! Est. Profit: ${ethers.formatEther(bestNetProfit)} ${token0.symbol} 🔥🔥🔥`);
+        const amountOutMinimum = (bestAmountOutFromFirstSwap * (10000n - SLIPPAGE_TOLERANCE)) / 10000n;
+        try {
+            const tx = await arbitrageV3.connect(signer).executeTrade(startOnUni, token0.address, token1.address, feeTier, bestAmount, amountOutMinimum, { gasLimit: 1500000 });
+            const receipt = await tx.wait();
+            successCount++;
+            const profit = ethers.formatEther(bestNetProfit); const pair = `${token0.symbol}/${token1.symbol}`;
+            const liveTradeMessage = `🚀 **Arbitrage Successful!** 🚀\n\n*Pair:* ${pair}\n*Profit:* ${profit} ${token0.symbol}`;
+            sendMessage(liveTradeMessage);
+            tradeHistory.push({ id: successCount, pair, profit: `${profit} ${token0.symbol}`, txHash: receipt.hash });
+        } catch (error) {
+            console.error("❌ Arbitrage TX Failed:", error.reason || "Unknown revert");
+        } finally {
+            isExecuting = false;
+        }
+    }
 };
 
-main().catch(error => {
-    console.error("Fatal error:", error);
-    process.exit(1);
-});
+const main = async () => {
+    const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    sendMessage("🤖 **Arbitrage Bot (Sepolia Testnet)**\nBot has been started. Send /status to check on me.");
+
+    provider.on('block', async (blockNumber) => {
+        if (!isRunning || isExecuting) return;
+        isExecuting = true;
+        try {
+            console.log(`\nBlock: #${blockNumber} | Checking ${tokensAgainst.length} pairs...`);
+            await Promise.all(tokensAgainst.map(addr => checkPair(arbForAddress, addr.trim(), signer)));
+        } catch (error) {
+            console.error("Main block handler error:", error);
+        } finally {
+            isExecuting = false;
+        }
+    });
+};
+
+main().catch(error => { console.error("Fatal startup error:", error); process.exit(1); });

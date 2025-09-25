@@ -1,34 +1,22 @@
-// We require the Hardhat Runtime Environment explicitly here. This is optional
-// but useful for running the script in a standalone fashion through `node <script>`.
-//
-// You can also run a script with `npx hardhat run <script>`. If you do that, Hardhat
-// will compile your contracts, add the Hardhat Runtime Environment's members to the
-// global scope, and execute the script.
+// scripts/deployArbitrageV3.js
 const hre = require("hardhat");
 
-const config = require("../config.json");
-
 async function main() {
-  const arbitrage = await hre.ethers.deployContract(
-    "ArbitrageV3",
-    [
-      config.BALANCERV3.VAULT_ADDRESS, // Balancer V3 Vault address
-      config.UNISWAPV3.V3_ROUTER_02_ADDRESS, // Uniswap V3 router
-      config.SUSHISWAPV3.V3_ROUTER_02_ADDRESS // Sushiswap V3 router
-    ]
-  );
+  console.log("Deploying ArbitrageV3 contract to Ethereum Sepolia...");
 
-  await arbitrage.waitForDeployment();
+  // MODIFICATION: All addresses converted to lowercase to prevent checksum errors.
+  const balancerVault = "0xba12222222228d8ba445958a75a0704d566bf2c8";
+  const uniswapRouter = "0x3bfa4769fb09eefc5ab0a6a6632373010b93bf0a";
+  const sushiswapRouter = "0x838a51754f2554a2624d09b1a848a1402f7159f8";
 
-  console.log(`Arbitrage V3 contract deployed to ${await arbitrage.getAddress()} on ${hre.network.name}`);
+  const ArbitrageV3 = await hre.ethers.getContractFactory("ArbitrageV3");
+  const arbitrageV3 = await ArbitrageV3.deploy(balancerVault, uniswapRouter, sushiswapRouter);
 
-  console.log(`\nTransaction Receipt:`);
-  console.log(await arbitrage.deploymentTransaction());
+  await arbitrageV3.waitForDeployment();
+  const contractAddress = await arbitrageV3.getAddress();
+
+  console.log(`✅ ArbitrageV3 contract deployed to Sepolia at: ${contractAddress}`);
+  console.log(`--> Verify on Etherscan Sepolia: https://sepolia.etherscan.io/address/${contractAddress}`);
 }
 
-// We recommend this pattern to be able to use async/await everywhere
-// and properly handle errors.
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+main().catch(console.error);
