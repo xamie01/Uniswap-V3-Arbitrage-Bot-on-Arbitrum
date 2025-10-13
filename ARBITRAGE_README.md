@@ -67,3 +67,14 @@ Once your bot is running, you can control and monitor it from anywhere using the
  * /history: Displays a list of the last 5 successful trades.
  * /logs: Retrieves the last 15 lines from the console for remote debugging.
 This bot is the result of a long and challenging development journey. It is a powerful tool built on a robust and professional architecture. Happy trading!
+
+
+Sepolia addy for Uniswap
+
+UNiswap V2
+Factory  0xF62c03E08ada871A0bEb309762E260a7a6a880E6
+Router 0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3
+
+Uniswap V3 
+Factory 0x0227628f3F023bb0B980b67D528571c95c6DaC1c
+Router 0xb41b78Ce3D1BDEDE48A3d303eD2564F6d1F6fff0
