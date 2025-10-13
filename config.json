@@ -1,7 +1,7 @@
 {
   "PROJECT_SETTINGS": {
     "isLocal": false,
-    "isDeployed": false,
+    "isDeployed": true,
     "ARBITRAGE_ADDRESS": "0x29104a566B46cdc6b5309fF88F649475c6342cC3"
   },
   "UNISWAP": {
