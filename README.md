@@ -1,80 +1,448 @@
-Arbitrum Flashloan Arbitrage Bot (V3 - XAHMIE_01 Edition)
-This advanced trading bot identifies and executes flashloan-powered arbitrage opportunities between Uniswap V3 and Sushiswap V3 on the Arbitrum network. It has been significantly upgraded from its original design to support multi-pair scanning, robust error handling, and a professional-grade testing environment.
-This bot is designed to be deployed and run on the Arbitrum Mainnet or the Arbitrum Sepolia Testnet.
-Key Features & Upgrades
- * Multi-Pair Scanning: Instead of watching a single token pair, the bot dynamically scans a list of configured tokens on every new block, dramatically increasing the chances of finding an opportunity.
- * Flashloan Powered: Utilizes Balancer flashloans to execute large trades with zero upfront capital.
- * V3 "Fee-Aware" Logic: The bot is intelligent enough to detect the most liquid fee tier (0.05%, 0.3%, 1%) for any given pair, allowing it to interact with a much wider range of markets.
- * Professional Test Environment: Comes with a suite of Hardhat scripts to deploy mock tokens and create a fully seeded, liquid, and predictable forked environment for safe and reliable testing.
- * MEV Protection Ready: The smart contract is designed with slippage protection to defend against common MEV attacks like sandwich attacks.
- * Telegram Integration: Features a fully integrated Telegram bot for remote control and monitoring, allowing you to start/stop the bot, check status, and receive real-time notifications of successful trades.
-Technology Stack & Tools
- * Solidity: Smart Contract Development
- * JavaScript / Ethers.js: Off-chain logic, blockchain interaction, and testing
- * Hardhat: Ethereum development environment for compiling, testing, and deploying
- * Alchemy/Infura: High-performance RPC connection to the Arbitrum network
- * Balancer: Flashloan provider
- * Telegram: Remote control and monitoring
-Setting Up Your Bot: The Definitive Guide
-This guide will walk you through setting up, testing, and deploying your bot.
-1. Initial Project Setup
- * Clone/Download the Repository
- * Install Dependencies: Open your terminal in the project folder and run:
-   npm install
+#V3 FLASHLOAN ARBITRAGE BOT - ALL COMMANDS
 
- * Create and Configure .env File: Create a .env file in the root of your project. Copy the contents of .env.example and fill in the values.
-   * PRIVATE_KEY: The private key of the wallet you will use to deploy the contract and run the bot. This wallet will receive all profits.
-   * ARBITRUM_RPC_URL: Your private HTTPS RPC URL for Arbitrum Mainnet from Alchemy or Infura.
-   * ARBITRUM_SEPOLIA_RPC_URL: Your private HTTPS RPC URL for Arbitrum Sepolia Testnet from Alchemy or Infura.
-   * ARB_FOR: The address of WETH on Arbitrum (0x82af49447d8a07e3bd95bd0d56f35241523fbab1). This is the token used for flashloans.
-   * ARB_AGAINST_TOKENS: A comma-separated list of token addresses you want the bot to monitor against WETH. We will populate this later during testing.
-   * PROFIT_THRESHOLD: The minimum percentage profit to trigger a trade (e.g., 0.1 for 0.1%).
-   * TELEGRAM_BOT_TOKEN: Your secret token from Telegram's BotFather.
-   * TELEGRAM_CHAT_ID: Your personal Telegram Chat ID for receiving messages.
-2. The Professional Testing Workflow (Using a Hardhat Fork)
-Before deploying to a live network, it is essential to test your bot in a controlled environment. This workflow uses mock tokens to create a perfect, repeatable test.
- * Open contracts/MockToken.sol: Ensure this file exists from our previous work. This is a simple, standard ERC20 contract.
- * Compile: Compile all contracts, including the new MockToken.
-   npx hardhat compile
+## SETUP (Run Once)
 
- * Start Your Fork: In Terminal 1, start a fresh, clean Hardhat node that is forked from Arbitrum Mainnet.
-   npx hardhat clean && npx hardhat node
+```bash
+# 1. Install dependencies
+npm install
 
- * Deploy Mock Tokens: The runTestEnvironment.js script will deploy clean, predictable versions of tokens like LINK, UNI, etc., for your test. In Terminal 2, run:
-   npx hardhat run scripts/runTestEnvironment.js --network localhost
+# 2. Create .env file
+cp .env.example .env
 
- * Update .env with Mock Addresses: The script will output a line like ARB_AGAINST_TOKENS=0x.... Copy this entire line and paste it into your .env file. This tells your bot to use the newly deployed mock tokens for the test.
- * Run the Bot: In Terminal 3, start your arbitrage bot. It will now connect to your local fork and start watching your mock tokens.
-   node bot.js
+# 3. Edit .env with your values
+nano .env
+# Add:
+# ETH_SEPOLIA_RPC_URL=https://eth-sepolia.alchemyapi.io/v2/YOUR_KEY
+# PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+# ARB_FOR=0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9
+# ARB_AGAINST=0x...YOUR_TOKEN...
+# TELEGRAM_BOT_TOKEN=YOUR_TOKEN
+# TELEGRAM_CHAT_ID=YOUR_CHAT_ID
+# PROFIT_THRESHOLD=0.1
+# MIN_PROFIT_THRESHOLD=0.001
+# FLASH_LOAN_FEE=0.0009
+# SLIPPAGE_TOLERANCE=50
 
- * Observe: The runTestEnvironment.js script (still running in Terminal 2) will now automatically seed the pools and manipulate the market. Watch your bot.js terminal (Terminal 3) to see it detect the opportunities and execute the arbitrage trades. You should also receive notifications on Telegram.
-3. Deploying to a Live Network (Arbitrum Sepolia or Mainnet)
-Once you are confident with the results from local testing, you can deploy to a live network.
- * Fund Your Wallet: Ensure your deployment wallet has a sufficient amount of ETH on the target network (e.g., Arbitrum Sepolia ETH) to pay for gas fees.
- * Deploy the ArbitrageV3.sol Contract: Run the deployment script, specifying the target network.
-   * For Testnet: npx hardhat run scripts/deployArbitrageV3.js --network arbitrumSepolia
-   * For Mainnet: npx hardhat run scripts/deployArbitrageV3.js --network arbitrum
- * Update config.json: The deploy script will output your new contract address. Copy this address and paste it as the value for ARBITRAGE_V3_ADDRESS in your config.json file.
- * Update .env with Real Token Addresses: Replace the mock token addresses in your ARB_AGAINST_TOKENS variable with the real, official Arbitrum addresses for the tokens you want to trade.
- * Run the Bot Live: Start your bot. It will now be operating on the live network you deployed to.
-   node bot.js
+# 4. Deploy contracts
+npx hardhat compile
 
-Telegram Bot Commands
-Once your bot is running, you can control and monitor it from anywhere using these commands in your Telegram chat with the bot:
- * /start: Resumes scanning for arbitrage opportunities.
- * /stop: Pauses scanning for arbitrage opportunities.
- * /status: Shows a report of the bot's current state, successful trade count, and wallet balance.
- * /history: Displays a list of the last 5 successful trades.
- * /logs: Retrieves the last 15 lines from the console for remote debugging.
-This bot is the result of a long and challenging development journey. It is a powerful tool built on a robust and professional architecture. Happy trading!
+# 5. Deploy ArbitrageV3
+npx hardhat run scripts/deploy.js --network sepolia
 
+# 6. Copy contract address to config.json
+# Edit config.json: "ARBITRAGE_V3_ADDRESS": "0x..."
+```
 
-Sepolia addy for Uniswap
+---
 
-UNiswap V2
-Factory  0xF62c03E08ada871A0bEb309762E260a7a6a880E6
-Router 0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3
+## FILE CREATION (Run Once)
 
-Uniswap V3 
-Factory 0x0227628f3F023bb0B980b67D528571c95c6DaC1c
-Router 0xb41b78Ce3D1BDEDE48A3d303eD2564F6d1F6fff0
+```bash
+# Create v2v3flashloanbot.js from artifact "v2v3flashloanbot.js - V2â†”V3 Arbitrage with Flashloan"
+# Create scripts/v3manipulate_improved.js from artifact "scripts/v3manipulate_improved.js - Market Manipulation"
+# Verify helpers/profitCalculator.js exists (should already be there)
+
+# Check files created
+ls -la v2v3flashloanbot.js
+ls -la scripts/v3manipulate_improved.js
+ls -la helpers/profitCalculator.js
+```
+
+---
+
+## VERIFY SETUP
+
+```bash
+# Check syntax
+node -c v2v3flashloanbot.js
+node -c scripts/v3manipulate_improved.js
+node -c helpers/profitCalculator.js
+
+# Check .env values
+cat .env | grep -E "PRIVATE_KEY|ETH_SEPOLIA|ARB_"
+
+# Check config.json
+cat config.json | grep ARBITRAGE_V3_ADDRESS
+```
+
+---
+
+## TESTING PHASE (24 Hours)
+
+```bash
+# Test 1: Deploy mock tokens
+npx hardhat run scripts/deployMocks.js --network sepolia
+
+# Test 2: Test profit calculations
+npx hardhat run scripts/testProfitCalculations.js --network localhost
+
+# Test 3: Check if contract deployed correctly
+npx hardhat console --network sepolia
+# Inside console:
+> const arbitrage = await ethers.getContractAt('ArbitrageV3', '0x...ADDRESS...')
+> await arbitrage.owner()
+# Should return your wallet address
+> exit()
+```
+
+---
+
+## OPERATION (Daily Usage)
+
+### Terminal 1: Create Price Differences
+
+```bash
+# Run once to create price gap
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+
+# Run 2-3 more times to widen gap
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+```
+
+### Terminal 2: Run Bot (MAIN)
+
+```bash
+# Start bot (runs continuously)
+node v2v3flashloanbot.js
+```
+
+### Terminal 3: Monitor (Optional)
+
+```bash
+# Check gas prices
+npx hardhat console --network sepolia
+> const fees = await ethers.provider.getFeeData()
+> ethers.formatUnits(fees.gasPrice, 'gwei')
+> exit()
+
+# Check wallet balance
+npx hardhat console --network sepolia
+> const balance = await ethers.provider.getBalance('0x...YOUR_ADDRESS...')
+> ethers.formatEther(balance)
+> exit()
+
+# Check token balance
+npx hardhat console --network sepolia
+> const token = await ethers.getContractAt('ERC20', '0x...TOKEN_ADDRESS...')
+> ethers.formatEther(await token.balanceOf('0x...YOUR_ADDRESS...'))
+> exit()
+
+# Get swap quote V2
+npx hardhat console --network sepolia
+> const router = await ethers.getContractAt('IUniswapV2Router02', config.UNISWAP.V2_ROUTER_02_ADDRESS)
+> await router.getAmountsOut(ethers.parseEther('0.1'), ['0x...TOKEN0...', '0x...TOKEN1...'])
+> exit()
+```
+
+---
+
+## TELEGRAM MONITORING (While Bot Running)
+
+```
+Send these commands to your Telegram bot:
+
+/start     â†’ Resume bot scanning
+/stop      â†’ Pause bot scanning
+/status    â†’ Check current status, trade count, balance
+/history   â†’ View last 5 trades with profits
+/logs      â†’ View last 15 console logs
+```
+
+---
+
+## TROUBLESHOOTING COMMANDS
+
+```bash
+# If bot not finding opportunities - check prices
+npx hardhat console --network sepolia
+> const v2Router = await ethers.getContractAt('IUniswapV2Router02', '0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3')
+> const v2Price = await v2Router.getAmountsOut(ethers.parseEther('0.1'), ['0x...WETH...', '0x...TOKEN...'])
+> ethers.formatEther(v2Price[1])
+> exit()
+
+# Check if V2 pool exists
+npx hardhat console --network sepolia
+> const factory = await ethers.getContractAt('IUniswapV2Factory', '0xF62c03E08ada871A0bEb309762E260a7a6a880E6')
+> const pair = await factory.getPair('0x...TOKEN0...', '0x...TOKEN1...')
+> pair
+# Should NOT be 0x0000000000000000000000000000000000000000
+> exit()
+
+# Check ETH balance for gas
+npx hardhat console --network sepolia
+> await ethers.provider.getBalance('0x...YOUR_ADDRESS...')
+# Should be > 0.5 ETH for testing
+> exit()
+
+# Get Sepolia ETH from faucet if needed
+# Visit: https://sepoliafaucet.com
+```
+
+---
+
+## OPTIMIZATION COMMANDS
+
+```bash
+# Lower threshold if no opportunities found
+# Edit .env:
+PROFIT_THRESHOLD=0.05
+
+# Restart bot
+node v2v3flashloanbot.js
+
+# Run manipulation more times to widen gap
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+
+# If too much gas cost, wait for lower gas prices
+# Check: https://sepolia.etherscan.io/gastracker
+```
+
+---
+
+## MAINTENANCE COMMANDS
+
+```bash
+# Restart bot (clean state)
+# Press Ctrl+C to stop
+node v2v3flashloanbot.js
+
+# View transaction history
+# Visit: https://sepolia.etherscan.io
+# Search your wallet address
+
+# Check contract balance
+npx hardhat console --network sepolia
+> const token = await ethers.getContractAt('ERC20', '0x...TOKEN...')
+> ethers.formatEther(await token.balanceOf('0x...CONTRACT_ADDRESS...'))
+> exit()
+
+# Approve tokens to routers (if needed)
+npx hardhat console --network sepolia
+> const token = await ethers.getContractAt('ERC20', '0x...TOKEN...')
+> const tx = await token.approve('0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3', ethers.MaxUint256)
+> await tx.wait()
+> exit()
+
+# Check logs
+tail -100 console.log
+
+# Restart everything
+pkill -f "node v2v3flashloanbot.js"
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+node v2v3flashloanbot.js
+```
+
+---
+
+## DEBUG COMMANDS
+
+```bash
+# Check if ArbitrageV3 is deployed
+npx hardhat console --network sepolia
+> const arbitrage = await ethers.getContractAt('ArbitrageV3', '0x...ADDRESS...')
+> await arbitrage.owner()
+> exit()
+
+# View recent blocks
+npx hardhat console --network sepolia
+> const block = await ethers.provider.getBlockNumber()
+> block
+> exit()
+
+# Check pending transactions
+npx hardhat console --network sepolia
+> const tx = await ethers.provider.getTransaction('0x...TX_HASH...')
+> await tx.wait()
+> exit()
+
+# Simulate trade (check if it would work)
+npx hardhat console --network sepolia
+> const router = await ethers.getContractAt('IUniswapV2Router02', '0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3')
+> try { await router.getAmountsOut(ethers.parseEther('0.1'), ['0x...TOKEN0...', '0x...TOKEN1...']) } catch(e) { console.log('Error:', e.message) }
+> exit()
+
+# Check contract approval status
+npx hardhat console --network sepolia
+> const token = await ethers.getContractAt('ERC20', '0x...TOKEN...')
+> const allowance = await token.allowance('0x...OWNER...', '0x...ROUTER...')
+> ethers.formatEther(allowance)
+> exit()
+
+# View contract events
+npx hardhat console --network sepolia
+> const arbitrage = await ethers.getContractAt('ArbitrageV3', '0x...ADDRESS...')
+> const events = await arbitrage.queryFilter('*')
+> events.slice(-5)
+> exit()
+```
+
+---
+
+## PRODUCTION DEPLOYMENT (After 24h Testing)
+
+```bash
+# Deploy to mainnet (ONLY after successful testing)
+# Update .env:
+ETH_ARBITRUM_RPC_URL=https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+# Deploy contract to mainnet
+npx hardhat run scripts/deploy.js --network arbitrum
+
+# Update config.json with mainnet contract address
+
+# Update .env for mainnet:
+ARB_FOR=0x82af49447d8a07e3bd95bd0d56f35241523fbab1  # Actual WETH on Arbitrum
+ARB_AGAINST=0x...                                    # Actual token
+
+# Run manipulation on mainnet
+npx hardhat run scripts/v3manipulate_improved.js --network arbitrum
+
+# Run bot on mainnet
+node v2v3flashloanbot.js
+```
+
+---
+
+## QUICK REFERENCE - Daily Workflow
+
+```bash
+# DAY 1: SETUP (30 minutes)
+npm install
+cp .env.example .env
+# Edit .env
+npx hardhat compile
+npx hardhat run scripts/deploy.js --network sepolia
+# Update config.json
+
+# DAY 1: FILE CREATION
+# Create v2v3flashloanbot.js from artifact
+# Create scripts/v3manipulate_improved.js from artifact
+node -c v2v3flashloanbot.js
+
+# DAY 1-2: TESTING (24+ hours)
+npx hardhat run scripts/deployMocks.js --network sepolia
+npx hardhat run scripts/testProfitCalculations.js --network localhost
+
+# DAILY: OPERATION
+# Terminal 1:
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+
+# Terminal 2:
+node v2v3flashloanbot.js
+
+# Telegram:
+/status
+/history
+/logs
+
+# Terminal 3 (Monitor):
+npx hardhat console --network sepolia
+# Check prices, balances, etc.
+```
+
+---
+
+## COMPLETE SETUP IN ONE GO
+
+```bash
+# Copy-paste this entire block to set up everything quickly
+
+# Step 1: Setup
+npm install
+cp .env.example .env
+
+# Step 2: Edit .env (you need to do this manually with your values)
+# nano .env
+
+# Step 3: Compile and deploy
+npx hardhat compile
+npx hardhat run scripts/deploy.js --network sepolia
+
+# Step 4: Note the contract address, then update config.json
+# nano config.json
+
+# Step 5: Create the bot files (from artifacts)
+# Create v2v3flashloanbot.js
+# Create scripts/v3manipulate_improved.js
+
+# Step 6: Verify
+node -c v2v3flashloanbot.js
+node -c scripts/v3manipulate_improved.js
+
+# Step 7: Test
+npx hardhat run scripts/deployMocks.js --network sepolia
+
+# Step 8: Run (in separate terminals)
+# Terminal 1:
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+
+# Terminal 2:
+node v2v3flashloanbot.js
+
+# Terminal 3 (Monitor):
+npx hardhat console --network sepolia
+```
+
+---
+
+## COMMON ISSUES & FIXES
+
+```bash
+# Issue: "Module not found: profitCalculator"
+# Fix: Verify file exists
+ls -la helpers/profitCalculator.js
+
+# Issue: "ARBITRAGE_V3_ADDRESS not in config"
+# Fix: Deploy contract and update config.json
+npx hardhat run scripts/deploy.js --network sepolia
+
+# Issue: Bot not finding opportunities
+# Fix: Run manipulation script more times
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+npx hardhat run scripts/v3manipulate_improved.js --network sepolia
+
+# Issue: High gas costs
+# Fix: Wait for lower gas prices or reduce trade size
+# Check: https://sepolia.etherscan.io/gastracker
+
+# Issue: Transaction reverted
+# Fix: Check Etherscan for error
+# Visit: https://sepolia.etherscan.io/tx/0x...YOUR_TX_HASH...
+
+# Issue: No Telegram alerts
+# Fix: Verify bot token and chat ID in .env
+cat .env | grep TELEGRAM
+
+# Issue: Insufficient balance for gas
+# Fix: Get Sepolia ETH from faucet
+# Visit: https://sepoliafaucet.com
+```
+
+---
+
+## MONITORING DASHBOARDS
+
+```
+Real-time Monitoring:
+ Telegram: /status /history /logs
+Etherscan: https://sepolia.etherscan.io (search wallet)
+Gas Tracker: https://sepolia.etherscan.io/gastracker
+Console: Watch for profit logs
+
+Daily Review:
+â
+ Total trades executed: Check /history in Telegram
+ Total profit: Calculate from trade logs
+Success rate: Count successful vs failed trades
+â€¢ Average profit: Total profit / number of trades
+```
+
+---
+
+**That's everything! Just follow the commands in order. Good luck! **
