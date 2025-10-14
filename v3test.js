@@ -1,24 +1,21 @@
 /**
- * v2v3flashloanbot.js
+ * v2v3flashloanbot_multi.js
  * 
- * Arbitrage bot that exploits price differences between Uniswap V2 and V3
- * using Balancer FLASHLOAN to fund the trades
+ * ENHANCED VERSION: Supports multiple token pairs
  * 
- * Flow:
- * 1. Manipulation script creates price difference (V2 cheap, V3 expensive)
- * 2. Bot detects opportunity
- * 3. Bot calls ArbitrageV3 contract with flashloan
- * 4. Contract borrows X tokens from Balancer
- * 5. Contract swaps on V2 (buy cheap)
- * 6. Contract swaps on V3 (sell expensive)
- * 7. Contract repays flashloan + fee
- * 8. Bot receives profit
+ * Features:
+ * - Arbitrages multiple tokens against a base token (WETH)
+ * - Uses Balancer flashloans for each trade
+ * - Monitors all pairs simultaneously
+ * - Executes on ANY profitable pair
+ * 
+ * .env Configuration:
+ * ARB_FOR=0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9  (Base token - WETH)
+ * ARB_AGAINST_TOKENS=0xtoken1,0xtoken2,0xtoken3      (Comma-separated)
  * 
  * Network: Sepolia Testnet
- * DEXes: Uniswap V2 & V3
- * Flash Loan: Balancer
  * 
- * Usage: node v2v3flashloanbot.js
+ * Usage: node v2v3flashloanbot_multi.js
  */
 
 require('./helpers/serverbot.js');
@@ -46,33 +43,18 @@ console.log(`   RPC: ${process.env.ETH_SEPOLIA_RPC_URL.substring(0, 50)}...`);
 // CONTRACT INSTANCES
 // ============================================
 
-// Uniswap V2 Contracts
 const v2Router = new ethers.Contract(
   config.UNISWAP.V2_ROUTER_02_ADDRESS,
   require("@uniswap/v2-periphery/build/IUniswapV2Router02.json").abi,
   provider
 );
 
-const v2Factory = new ethers.Contract(
-  config.UNISWAP.FACTORY_ADDRESS,
-  require("@uniswap/v2-core/build/IUniswapV2Factory.json").abi,
-  provider
-);
-
-// Uniswap V3 Contracts
 const v3Router = new ethers.Contract(
   config.UNISWAPV3.V3_ROUTER_02_ADDRESS,
   require("@uniswap/v3-periphery/artifacts/contracts/SwapRouter.sol/SwapRouter.json").abi,
   provider
 );
 
-const v3Factory = new ethers.Contract(
-  config.UNISWAPV3.FACTORY_ADDRESS,
-  require("@uniswap/v3-core/artifacts/contracts/UniswapV3Factory.sol/UniswapV3Factory.json").abi,
-  provider
-);
-
-// ArbitrageV3 Contract (with flashloan)
 const arbitrageV3 = new ethers.Contract(
   config.PROJECT_SETTINGS.ARBITRAGE_V3_ADDRESS,
   require("./artifacts/contracts/ArbitrageV3.sol/ArbitrageV3.json").abi,
@@ -93,20 +75,32 @@ const ERC20_ABI = [
 ];
 
 // ============================================
+// MULTI-TOKEN CONFIGURATION
+// ============================================
+
+// Parse multiple token addresses from .env
+const BASE_TOKEN = process.env.ARB_FOR; // WETH (e.g., 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9)
+
+const TOKEN_ADDRESSES = (process.env.ARB_AGAINST_TOKENS || "")
+  .split(',')
+  .map(addr => addr.trim())
+  .filter(addr => addr && addr !== "");
+
+console.log(`\n💰 BASE TOKEN (ARB_FOR): ${BASE_TOKEN}`);
+console.log(`📦 TARGET TOKENS (ARB_AGAINST_TOKENS):`);
+TOKEN_ADDRESSES.forEach((addr, i) => {
+  console.log(`   ${i + 1}. ${addr}`);
+});
+
+// ============================================
 // CONFIGURATION
 // ============================================
 
-const TOKEN_PAIR = {
-  token0: process.env.ARB_AGAINST,  // One token (e.g., LINK)
-  token1: process.env.ARB_FOR,      // Other token (e.g., WETH)
-};
-
-const PROFIT_THRESHOLD = parseFloat(process.env.PROFIT_THRESHOLD) || 0.1; // 0.1%
+const PROFIT_THRESHOLD = parseFloat(process.env.PROFIT_THRESHOLD) || 0.1;
 const MIN_PROFIT_THRESHOLD = ethers.parseEther(process.env.MIN_PROFIT_THRESHOLD || "0.001");
-const FLASH_LOAN_FEE = parseFloat(process.env.FLASH_LOAN_FEE) || 0.0009; // 0.09% Balancer fee
-const SLIPPAGE_TOLERANCE = 50n; // 0.5% in basis points
-const V2_FEE = 3000; // V2 uses fixed fee
-const V3_FEE_TIER = 3000; // 0.3% V3 fee tier
+const FLASH_LOAN_FEE = parseFloat(process.env.FLASH_LOAN_FEE) || 0.0009;
+const SLIPPAGE_TOLERANCE = 50n;
+const V3_FEE_TIER = 3000;
 
 // ============================================
 // TELEGRAM BOT SETUP
@@ -118,6 +112,7 @@ let isExecuting = false;
 let successCount = 0;
 let tradeHistory = [];
 let logHistory = [];
+let tokenStats = {}; // Track stats per token
 
 const MAX_LOG_HISTORY = 50;
 
@@ -153,7 +148,7 @@ console.error = function(...args) {
 
 bot.onText(/\/start/, (msg) => {
   isRunning = true;
-  sendMessage(`✅ **V2↔V3 Flashloan Arbitrage Bot STARTED**\n\nUsing Balancer flashloans to exploit V2/V3 price differences`);
+  sendMessage(`✅ **Multi-Token V2↔V3 Flashloan Bot STARTED**\n\nMonitoring ${TOKEN_ADDRESSES.length} token pairs`);
 });
 
 bot.onText(/\/stop/, (msg) => {
@@ -164,13 +159,19 @@ bot.onText(/\/stop/, (msg) => {
 bot.onText(/\/status/, async (msg) => {
   const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
   const balance = await provider.getBalance(signer.address);
-  sendMessage(
-    `**V2↔V3 Flashloan Bot Status**\n` +
+  
+  let statsText = `**Multi-Token Bot Status**\n` +
     `State: ${isRunning ? '✅ Running' : '❌ Stopped'}\n` +
-    `Trades Executed: ${successCount}\n` +
-    `ETH Balance: ${ethers.formatEther(balance)}\n` +
-    `Contract: ${config.PROJECT_SETTINGS.ARBITRAGE_V3_ADDRESS}`
-  );
+    `Total Trades: ${successCount}\n` +
+    `ETH Balance: ${ethers.formatEther(balance)}\n\n` +
+    `**Per Token Stats:**\n`;
+  
+  TOKEN_ADDRESSES.forEach((addr, i) => {
+    const stat = tokenStats[addr] || { trades: 0, profit: '0' };
+    statsText += `${i + 1}. ${addr.substring(0, 8)}...\n   Trades: ${stat.trades}, Profit: ${stat.profit}\n`;
+  });
+  
+  sendMessage(statsText);
 });
 
 bot.onText(/\/history/, (msg) => {
@@ -178,14 +179,11 @@ bot.onText(/\/history/, (msg) => {
     sendMessage("No trades recorded yet.");
     return;
   }
-  let message = "**Recent Trades (Last 5)**\n\n";
-  tradeHistory.slice(-5).reverse().forEach(t => {
-    message += `**Trade #${t.id}**\n` +
-      `Pair: ${t.pair}\n` +
-      `Flashloan: ${t.flashAmount} WETH\n` +
+  let message = "**Recent Trades (Last 10)**\n\n";
+  tradeHistory.slice(-10).reverse().forEach(t => {
+    message += `**Trade #${t.id}** | ${t.tokenSymbol}\n` +
       `Profit: ${t.profit}\n` +
-      `Direction: ${t.direction}\n` +
-      `TX: ${t.txHash}\n\n`;
+      `TX: ${t.txHash.substring(0, 8)}...\n\n`;
   });
   sendMessage(message);
 });
@@ -221,7 +219,7 @@ async function getTokenMetadata(tokenAddress) {
 }
 
 /**
- * Get V2 price for amount
+ * Get V2 price
  */
 async function getPriceV2(token0, token1, amountIn) {
   try {
@@ -229,37 +227,27 @@ async function getPriceV2(token0, token1, amountIn) {
     const amounts = await v2Router.getAmountsOut(amountIn, path);
     return amounts[1];
   } catch (error) {
-    console.error(`Error getting V2 price: ${error.message}`);
     return 0n;
   }
 }
 
 /**
- * Get V3 price for amount
+ * Get V3 price
  */
 async function getPriceV3(token0, token1, amountIn) {
   try {
-    // For V3, we need to calculate price from pool
-    // This is simplified - in reality you'd use quoter
-    // For now, estimate based on reserves
     const path = [token0, token1];
-    
-    // Try V2 as approximation (V3 liquidity might be similar)
     const v2Amounts = await v2Router.getAmountsOut(amountIn, path);
-    
-    // V3 prices might be slightly different due to fee tier
-    // This is a simplification
     return v2Amounts[1];
   } catch (error) {
-    console.error(`Error getting V3 price: ${error.message}`);
     return 0n;
   }
 }
 
 /**
- * Execute arbitrage using flashloan from Balancer
+ * Execute flashloan arbitrage for a specific token
  */
-async function executeFlashloanArbitrage(opportunity, signer) {
+async function executeFlashloanArbitrage(opportunity, signer, token) {
   if (isExecuting) {
     console.log("⏳ Already executing, skipping...");
     return;
@@ -270,54 +258,40 @@ async function executeFlashloanArbitrage(opportunity, signer) {
   try {
     const { amountIn, expectedProfit, direction } = opportunity;
 
-    console.log(`\n💸 EXECUTING FLASHLOAN ARBITRAGE`);
+    console.log(`\n💸 EXECUTING FLASHLOAN ARBITRAGE - ${token.symbol}`);
     console.log(`   Flashloan Amount: ${ethers.formatEther(amountIn)}`);
     console.log(`   Direction: ${direction}`);
     console.log(`   Expected Profit: ${ethers.formatEther(expectedProfit)}`);
 
-    // Determine direction
-    // direction = true: Start on V2 (buy V2, sell V3)
-    // direction = false: Start on V3 (buy V3, sell V2)
     const startOnV2 = direction === "V2→V3";
 
-    // Call ArbitrageV3 contract
-    // Contract will:
-    // 1. Request flashloan from Balancer
-    // 2. Swap on V2 or V3 (buy)
-    // 3. Swap on V3 or V2 (sell)
-    // 4. Repay flashloan + fee
-    // 5. Send profit to caller
-
-    console.log(`\n📞 Calling ArbitrageV3 contract...`);
-    console.log(`   Start on: ${startOnV2 ? 'V2' : 'V3'}`);
-
     const tx = await arbitrageV3.connect(signer).executeTrade(
-      startOnV2,                    // Start on V2
-      TOKEN_PAIR.token0,            // LINK
-      TOKEN_PAIR.token1,            // WETH
-      V3_FEE_TIER,                  // 3000 (0.3%)
-      amountIn,                     // Flashloan amount
-      calculateAmountOutMinimum(
-        amountIn,
-        50,
-        ethers.parseEther("0"),
-        ethers.parseEther("0")
-      ),
+      startOnV2,
+      token.address,
+      BASE_TOKEN,
+      V3_FEE_TIER,
+      amountIn,
+      calculateAmountOutMinimum(amountIn, 50, ethers.parseEther("0"), ethers.parseEther("0")),
       { gasLimit: 1500000 }
     );
 
     console.log(`   TX Hash: ${tx.hash}`);
-    console.log(`   Waiting for confirmation...`);
 
     const receipt = await tx.wait();
 
-    console.log(`   ✅ Confirmed in block ${receipt.blockNumber}`);
-
     successCount++;
+
+    // Update token stats
+    if (!tokenStats[token.address]) {
+      tokenStats[token.address] = { trades: 0, profit: '0' };
+    }
+    tokenStats[token.address].trades += 1;
+    tokenStats[token.address].profit = expectedProfit.toString();
 
     sendMessage(
       `🚀 **Flashloan Arbitrage Success!** 🚀\n\n` +
-      `Flashloan: ${ethers.formatEther(amountIn)} ${TOKEN_PAIR.token1}\n` +
+      `Token: ${token.symbol}\n` +
+      `Flashloan: ${ethers.formatEther(amountIn)} ${token.symbol}\n` +
       `Strategy: ${direction}\n` +
       `Profit: ${ethers.formatEther(expectedProfit)}\n` +
       `[View TX](https://sepolia.etherscan.io/tx/${receipt.hash})`
@@ -325,48 +299,41 @@ async function executeFlashloanArbitrage(opportunity, signer) {
 
     tradeHistory.push({
       id: successCount,
-      pair: `${TOKEN_PAIR.token0}/${TOKEN_PAIR.token1}`,
+      token: token.address,
+      tokenSymbol: token.symbol,
       flashAmount: ethers.formatEther(amountIn),
       profit: `${ethers.formatEther(expectedProfit)}`,
       direction: direction,
       txHash: receipt.hash
     });
 
-    console.log(`\n✅ TRADE #${successCount} COMPLETED`);
+    console.log(`\n✅ TRADE #${successCount} COMPLETED (${token.symbol})`);
 
   } catch (error) {
-    console.error(`❌ Flashloan arbitrage failed: ${error.message}`);
-    if (error.reason) console.error(`Reason: ${error.reason}`);
-    sendMessage(`❌ **Trade Failed**\n\n${error.reason || error.message}`);
+    console.error(`❌ Flashloan arbitrage failed for ${token.symbol}: ${error.message}`);
   } finally {
     isExecuting = false;
   }
 }
 
 // ============================================
-// CORE ARBITRAGE LOGIC
+// MULTI-TOKEN ARBITRAGE CHECKING
 // ============================================
 
-async function checkForArbitrage(signer) {
+/**
+ * Check for arbitrage opportunity on a specific token
+ */
+async function checkForArbitrage(token, signer) {
   try {
-    // Get token metadata
-    const token0 = await getTokenMetadata(TOKEN_PAIR.token0);
-    const token1 = await getTokenMetadata(TOKEN_PAIR.token1);
+    if (!token) return null;
 
-    if (!token0 || !token1) {
-      console.log(`❌ Could not get token metadata`);
-      return null;
-    }
-
-    // Test amount for price checking
     const testAmount = ethers.parseEther("0.1");
 
     // Get prices on both pools
-    const priceV2 = await getPriceV2(TOKEN_PAIR.token1, TOKEN_PAIR.token0, testAmount);
-    const priceV3 = await getPriceV3(TOKEN_PAIR.token1, TOKEN_PAIR.token0, testAmount);
+    const priceV2 = await getPriceV2(BASE_TOKEN, token.address, testAmount);
+    const priceV3 = await getPriceV3(BASE_TOKEN, token.address, testAmount);
 
     if (priceV2 === 0n || priceV3 === 0n) {
-      console.log(`❌ Could not get quotes`);
       return null;
     }
 
@@ -374,10 +341,9 @@ async function checkForArbitrage(signer) {
     const priceRatio = Number(priceV3) / Number(priceV2);
     const priceDifference = Math.abs((priceRatio - 1) * 100);
 
-    console.log(`\n📊 PRICE CHECK`);
-    console.log(`   Pair: ${token1.symbol}/${token0.symbol}`);
-    console.log(`   V2 Price: ${ethers.formatEther(priceV2)} ${token0.symbol}`);
-    console.log(`   V3 Price: ${ethers.formatEther(priceV3)} ${token0.symbol}`);
+    console.log(`\n📊 PRICE CHECK - ${token.symbol}`);
+    console.log(`   V2 Price: ${ethers.formatEther(priceV2)}`);
+    console.log(`   V3 Price: ${ethers.formatEther(priceV3)}`);
     console.log(`   Difference: ${priceDifference.toFixed(4)}%`);
 
     // Check if difference exceeds threshold
@@ -388,7 +354,7 @@ async function checkForArbitrage(signer) {
 
     console.log(`   ✅ ABOVE THRESHOLD! Analyzing...`);
 
-    // Determine direction: which is cheaper?
+    // Determine direction
     const v2Cheaper = priceV2 < priceV3;
     const direction = v2Cheaper ? "V2→V3" : "V3→V2";
 
@@ -404,19 +370,17 @@ async function checkForArbitrage(signer) {
 
     while (flashAmount <= maxAmount) {
       try {
-        // Get prices for this amount
-        const amountOut1V2 = await getPriceV2(TOKEN_PAIR.token1, TOKEN_PAIR.token0, flashAmount);
-        const amountOut2V3 = await getPriceV3(TOKEN_PAIR.token0, TOKEN_PAIR.token1, amountOut1V2);
+        const amountOut1V2 = await getPriceV2(BASE_TOKEN, token.address, flashAmount);
+        const amountOut2V3 = await getPriceV3(token.address, BASE_TOKEN, amountOut1V2);
 
-        // Calculate profit
         const gasPrice = (await provider.getFeeData()).gasPrice;
         const profitAnalysis = calculateTrueNetProfit(
           flashAmount,
           amountOut1V2,
           amountOut2V3,
           gasPrice,
-          FLASH_LOAN_FEE,      // Balancer fee
-          600000n              // Gas units for dual swaps with flashloan
+          FLASH_LOAN_FEE,
+          600000n
         );
 
         if (profitAnalysis.isProfitable && profitAnalysis.netProfit >= MIN_PROFIT_THRESHOLD) {
@@ -438,18 +402,45 @@ async function checkForArbitrage(signer) {
     }
 
     if (bestOpportunity) {
-      console.log(`\n🎯 OPPORTUNITY FOUND!`);
+      console.log(`\n🎯 OPPORTUNITY FOUND FOR ${token.symbol}!`);
       console.log(`   Flashloan: ${ethers.formatEther(bestOpportunity.amountIn)}`);
       console.log(`   Expected Profit: ${ethers.formatEther(bestOpportunity.expectedProfit)}`);
-      console.log(formatProfitAnalysis(bestOpportunity.profitAnalysis));
-      return bestOpportunity;
+      return { ...bestOpportunity, token };
     }
 
   } catch (error) {
-    console.error(`Error checking for arbitrage: ${error.message}`);
+    console.error(`Error checking arbitrage for token: ${error.message}`);
   }
 
   return null;
+}
+
+/**
+ * Check all token pairs sequentially
+ */
+async function checkAllTokenPairs(signer) {
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`CHECKING ${TOKEN_ADDRESSES.length} TOKEN PAIRS`);
+  console.log(`${"=".repeat(60)}`);
+
+  for (const tokenAddr of TOKEN_ADDRESSES) {
+    try {
+      const token = await getTokenMetadata(tokenAddr);
+      if (!token) continue;
+
+      const opportunity = await checkForArbitrage(token, signer);
+
+      if (opportunity) {
+        await executeFlashloanArbitrage(opportunity, signer, token);
+        break; // Execute one trade per block
+      }
+    } catch (error) {
+      console.error(`Error checking token ${tokenAddr}: ${error.message}`);
+    }
+
+    // Small delay between checks to avoid RPC rate limits
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 }
 
 // ============================================
@@ -458,21 +449,31 @@ async function checkForArbitrage(signer) {
 
 async function main() {
   console.log(`\n${"=".repeat(70)}`);
-  console.log(`   V2 ↔ V3 UNISWAP ARBITRAGE BOT (Flashloan Powered)`);
+  console.log(`   V2 ↔ V3 MULTI-TOKEN FLASHLOAN ARBITRAGE BOT`);
   console.log(`   Network: Sepolia Testnet`);
   console.log(`   Flash Loan: Balancer`);
-  console.log(`   Strategy: Detect price difference, use flashloan, profit`);
   console.log(`${"=".repeat(70)}\n`);
+
+  // Verify we have tokens configured
+  if (TOKEN_ADDRESSES.length === 0) {
+    console.error("❌ ERROR: No tokens configured in ARB_AGAINST_TOKENS");
+    console.error("Set ARB_AGAINST_TOKENS in .env as: 0xtoken1,0xtoken2,0xtoken3");
+    process.exit(1);
+  }
 
   const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
   console.log(`📍 Signer: ${signer.address}`);
-  console.log(`🎯 Token Pair: ${TOKEN_PAIR.token0} ↔ ${TOKEN_PAIR.token1}`);
+  console.log(`🎯 Base Token: ${BASE_TOKEN}`);
+  console.log(`📦 Monitoring ${TOKEN_ADDRESSES.length} tokens`);
   console.log(`📊 Profit Threshold: ${PROFIT_THRESHOLD}%`);
-  console.log(`💰 Min Profit: ${ethers.formatEther(MIN_PROFIT_THRESHOLD)} ETH`);
-  console.log(`⚡ Flashloan Fee: ${(FLASH_LOAN_FEE * 100).toFixed(3)}%`);
-  console.log(`📜 ArbitrageV3 Contract: ${config.PROJECT_SETTINGS.ARBITRAGE_V3_ADDRESS}\n`);
+  console.log(`💰 Min Profit: ${ethers.formatEther(MIN_PROFIT_THRESHOLD)} ETH\n`);
 
-  sendMessage(`🤖 **V2↔V3 Flashloan Arbitrage Bot Started**\n\nMonitoring Sepolia testnet for price differences...`);
+  sendMessage(`🤖 **Multi-Token V2↔V3 Flashloan Bot Started**\n\nMonitoring ${TOKEN_ADDRESSES.length} token pairs on Sepolia...`);
+
+  // Initialize token stats
+  TOKEN_ADDRESSES.forEach(addr => {
+    tokenStats[addr] = { trades: 0, profit: '0' };
+  });
 
   // Listen to new blocks
   let checkCount = 0;
@@ -483,17 +484,13 @@ async function main() {
     console.log(`\n📦 Block #${blockNumber} - Check #${checkCount}`);
 
     try {
-      const opportunity = await checkForArbitrage(signer);
-
-      if (opportunity) {
-        await executeFlashloanArbitrage(opportunity, signer);
-      }
+      await checkAllTokenPairs(signer);
     } catch (error) {
       console.error(`Block handler error: ${error.message}`);
     }
   });
 
-  console.log(`🚀 Bot listening for arbitrage opportunities...\n`);
+  console.log(`🚀 Bot listening for arbitrage opportunities on ${TOKEN_ADDRESSES.length} tokens...\n`);
 }
 
 main().catch(error => {
