@@ -1,11 +1,5 @@
 node_modules
 .env
-coverage
-coverage.json
-typechain
-typechain-types
-output.txt
-bot.js
 
 #Hardhat files
 cache
