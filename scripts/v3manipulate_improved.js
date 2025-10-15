@@ -40,6 +40,7 @@ const UNISWAP_V2_ROUTER_ABI = [
   "function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts)"
 ];
 
+
 const UNISWAP_V3_ROUTER_ABI = [
   "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountOut)"
 ];
@@ -194,23 +195,33 @@ async function main() {
     await approveTx1.wait();
     console.log(`   ✅ Approved`);
 
+       // ...
     // Swap
     console.log(`   → Executing swap...`);
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
+
+    // A: Simulate the transaction using getAmountsOut to get the exact amount to be received
+    const swapAmounts = await v2Router.getAmountsOut(SWAP_AMOUNT, [BASE_TOKEN, TARGET_TOKEN]);
+    const targetAmountReceived = swapAmounts[1]; 
+    
+    // B: Execute the actual transaction
     const swapTx1 = await v2Router.swapExactTokensForTokens(
       SWAP_AMOUNT,
-      0,
+      0, 
       [BASE_TOKEN, TARGET_TOKEN],
       signer.address,
       deadline,
       { gasLimit: 500000 }
     );
 
-    const receipt1 = await swapTx1.wait();
-    const targetAmountReceived = await targetToken.balanceOf(signer.address);
+    // VITAL: This should be the only 'const receipt1' line.
+    const receipt1 = await swapTx1.wait(); 
+    
     console.log(`   ✅ Swap complete`);
     console.log(`   Received: ${ethers.formatEther(targetAmountReceived)} ${targetTokenInfo.symbol}`);
     console.log(`   TX: ${receipt1.hash}\n`);
+// ...
+
 
     // ============================================
     // STEP 2: SELL ON V3
