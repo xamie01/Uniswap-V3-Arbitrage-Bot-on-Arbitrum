@@ -364,8 +364,8 @@ async function checkForArbitrage(token, signer) {
     let bestOpportunity = null;
     let bestProfit = -Infinity;
 
-    let flashAmount = ethers.parseEther("0.1");
-    const maxAmount = ethers.parseEther("2.0");
+    let flashAmount = ethers.parseEther("0.005");
+    const maxAmount = ethers.parseEther("0.014");
     const step = ethers.parseEther("0.1");
 
     while (flashAmount <= maxAmount) {
